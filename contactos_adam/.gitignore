@@ -28,3 +28,8 @@ Thumbs.db
 *.class
 *.jar
 *.zip
+
+# Local database credentials
+.env
+.env.*
+!.env.example

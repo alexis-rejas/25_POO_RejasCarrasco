@@ -1,75 +1,132 @@
 package pe.edu.vallegrande.misisitema.model;
 
+import java.net.URISyntaxException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 
-/**
- * Clase singleton para gestionar la conexión a MySQL
- * Conecta a la base de datos ADAM de Vallegrande
- */
-public class Conexion {
-    
-    // Parámetros de conexión a MySQL Workbench
-    private static final String HOST = "localhost";
-    private static final int PUERTO = 3308;  // Puerto de MySQL Workbench
-    private static final String BD = "adam_db";
-    private static final String USUARIO = "adam_user";
-    private static final String CONTRASENA = "adam123";
-    private static final String DRIVER = "com.mysql.cj.jdbc.Driver";
-    
-    private static Connection conexion = null;
-    
-    /**
-     * Obtiene la conexión a la base de datos
-     * Si no existe, crea una nueva
-     */
-    public static Connection getConexion() {
-        if (conexion == null) {
-            try {
-                Class.forName(DRIVER);
-                String url = String.format(
-                    "jdbc:mysql://%s:%d/%s?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC",
-                    HOST, PUERTO, BD
-                );
-                conexion = DriverManager.getConnection(url, USUARIO, CONTRASENA);
-                System.out.println("✓ Conexión a MySQL Workbench exitosa");
-                System.out.println("  Base de datos: " + BD);
-                System.out.println("  Host: " + HOST + ":" + PUERTO);
-            } catch (ClassNotFoundException e) {
-                System.err.println("✗ Error: Driver MySQL no encontrado");
-                System.err.println("  " + e.getMessage());
-            } catch (SQLException e) {
-                System.err.println("✗ Error al conectar a la base de datos");
-                System.err.println("  " + e.getMessage());
-                System.err.println("  Verifica que MySQL esté corriendo y los datos sean correctos");
+import io.github.cdimascio.dotenv.Dotenv;
+
+public final class Conexion {
+    private static final String DEFAULT_HOST = "127.0.0.1";
+    private static final int DEFAULT_PORT = 3308;
+    private static final String DEFAULT_DATABASE = "adam_db";
+    private static final String DEFAULT_USER = "adam_user";
+    private static final Dotenv DOTENV = loadDotenv();
+
+    private Conexion() {
+    }
+
+    public static Connection getConexion() throws SQLException {
+        String password = setting("DB_PASSWORD", "");
+        if (password.isBlank()) {
+            throw new SQLException(
+                    "Falta DB_PASSWORD. No se encontró una contraseña en variables de entorno "
+                            + "ni en el archivo .env del proyecto contactos_adam."
+            );
+        }
+
+        String host = setting("DB_HOST", DEFAULT_HOST);
+        String portValue = setting("DB_PORT", Integer.toString(DEFAULT_PORT));
+        String database = setting("DB_NAME", DEFAULT_DATABASE);
+        String user = setting("DB_USER", DEFAULT_USER);
+        String sslMode = setting("DB_SSL_MODE", "DISABLED").toUpperCase();
+        int port;
+        try {
+            port = Integer.parseInt(portValue);
+        } catch (NumberFormatException error) {
+            throw new SQLException("DB_PORT debe ser un número válido.", error);
+        }
+
+        if (port < 1 || port > 65535) {
+            throw new SQLException("DB_PORT debe estar entre 1 y 65535.");
+        }
+        if (!sslMode.matches("DISABLED|PREFERRED|REQUIRED|VERIFY_CA|VERIFY_IDENTITY")) {
+            throw new SQLException("DB_SSL_MODE no contiene un modo TLS válido.");
+        }
+
+        String url = String.format(
+                "jdbc:mysql://%s:%d/%s?sslMode=%s&allowPublicKeyRetrieval=true"
+                        + "&connectionTimeZone=UTC&characterEncoding=UTF-8",
+                host,
+                port,
+                database,
+                sslMode
+        );
+        return DriverManager.getConnection(url, user, password);
+    }
+
+    private static Dotenv loadDotenv() {
+        Path envFile = findDotenvFile();
+        if (envFile == null) {
+            return Dotenv.configure().ignoreIfMissing().load();
+        }
+        return Dotenv.configure()
+                .directory(envFile.getParent().toString())
+                .filename(envFile.getFileName().toString())
+                .ignoreIfMissing()
+                .load();
+    }
+
+    private static Path findDotenvFile() {
+        Path workingDirectory = Path.of(System.getProperty("user.dir", "."))
+                .toAbsolutePath()
+                .normalize();
+        Path found = findDotenvFrom(workingDirectory);
+        if (found != null) {
+            return found;
+        }
+
+        try {
+            Path classLocation = Path.of(
+                    Conexion.class.getProtectionDomain().getCodeSource().getLocation().toURI()
+            ).toAbsolutePath().normalize();
+            return findDotenvFrom(Files.isDirectory(classLocation)
+                    ? classLocation
+                    : classLocation.getParent());
+        } catch (URISyntaxException error) {
+            throw new IllegalStateException("No se pudo resolver la ubicación de Conexion.class.", error);
+        }
+    }
+
+    private static Path findDotenvFrom(Path start) {
+        Path parent = start;
+        while (parent != null) {
+            Path candidate = parent.resolve(".env");
+            if (Files.isRegularFile(candidate)) {
+                return candidate;
+            }
+            parent = parent.getParent();
+        }
+        return null;
+    }
+
+    private static String setting(String name, String fallback) {
+        String value = System.getProperty(name);
+        if (value == null || value.isBlank()) {
+            value = System.getenv(name);
+        }
+        if (value == null || value.isBlank()) {
+            value = DOTENV.get(name);
+        }
+        String sanitized = normalizeValue(value);
+        return sanitized == null || sanitized.isBlank() ? fallback : sanitized;
+    }
+
+    private static String normalizeValue(String value) {
+        if (value == null) {
+            return null;
+        }
+        String sanitized = value.trim();
+        if (sanitized.length() >= 2) {
+            char first = sanitized.charAt(0);
+            char last = sanitized.charAt(sanitized.length() - 1);
+            if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+                sanitized = sanitized.substring(1, sanitized.length() - 1);
             }
         }
-        return conexion;
-    }
-    
-    /**
-     * Cierra la conexión a la base de datos
-     */
-    public static void cerrarConexion() {
-        try {
-            if (conexion != null && !conexion.isClosed()) {
-                conexion.close();
-                System.out.println("✓ Conexión cerrada");
-            }
-        } catch (SQLException e) {
-            System.err.println("✗ Error al cerrar la conexión: " + e.getMessage());
-        }
-    }
-    
-    /**
-     * Verifica si la conexión está activa
-     */
-    public static boolean isConectado() {
-        try {
-            return conexion != null && !conexion.isClosed();
-        } catch (SQLException e) {
-            return false;
-        }
+        return sanitized;
     }
 }
